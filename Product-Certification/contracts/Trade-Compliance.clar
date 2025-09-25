@@ -14,6 +14,8 @@
 (define-constant ERR-PRODUCT-NOT-CERTIFIED (err u424))
 (define-constant ERR-RENEWAL-TOO-EARLY (err u425))
 (define-constant ERR-INVALID-CERTIFICATION-LEVEL (err u426))
+(define-constant ERR-INVALID-INPUT-LENGTH (err u427))
+(define-constant ERR-INVALID-PRINCIPAL (err u428))
 
 ;; Contract owner for administrative functions
 (define-constant CONTRACT-OWNER tx-sender)
@@ -33,6 +35,19 @@
 ;; Time constants (in blocks, approximately 10 minutes per block)
 (define-constant CERTIFICATION-VALIDITY-PERIOD u52560) ;; ~1 year
 (define-constant RENEWAL-WINDOW u5256) ;; ~36 days before expiry
+
+;; Input validation constants
+(define-constant MIN-STRING-LENGTH u1)
+(define-constant MAX-PRODUCT-ID-LENGTH u64)
+(define-constant MAX-PRODUCT-NAME-LENGTH u128)
+(define-constant MAX-CATEGORY-LENGTH u64)
+(define-constant MAX-COUNTRY-LENGTH u32)
+(define-constant MAX-CERTIFIER-NAME-LENGTH u128)
+(define-constant MAX-ACCREDITATION-ID-LENGTH u64)
+(define-constant MAX-DOCUMENTATION-HASH-LENGTH u128)
+(define-constant MAX-VERIFICATION-NOTES-LENGTH u256)
+(define-constant MAX-FINDINGS-LENGTH u512)
+(define-constant MAX-RECOMMENDATIONS-LENGTH u512)
 
 ;; Data structure for product information
 (define-map products
@@ -104,6 +119,44 @@
 ;; Events for tracking contract activities
 (define-data-var last-event-id uint u0)
 
+;; Input validation helper functions
+(define-private (validate-string-length (str (string-ascii 512)) (min-len uint) (max-len uint))
+  (let ((str-len (len str)))
+    (and (>= str-len min-len) (<= str-len max-len))))
+
+(define-private (validate-product-id (product-id (string-ascii 64)))
+  (validate-string-length product-id MIN-STRING-LENGTH MAX-PRODUCT-ID-LENGTH))
+
+(define-private (validate-product-name (product-name (string-ascii 128)))
+  (validate-string-length product-name MIN-STRING-LENGTH MAX-PRODUCT-NAME-LENGTH))
+
+(define-private (validate-category (category (string-ascii 64)))
+  (validate-string-length category MIN-STRING-LENGTH MAX-CATEGORY-LENGTH))
+
+(define-private (validate-country (country (string-ascii 32)))
+  (validate-string-length country MIN-STRING-LENGTH MAX-COUNTRY-LENGTH))
+
+(define-private (validate-certifier-name (name (string-ascii 128)))
+  (validate-string-length name MIN-STRING-LENGTH MAX-CERTIFIER-NAME-LENGTH))
+
+(define-private (validate-accreditation-id (id (string-ascii 64)))
+  (validate-string-length id MIN-STRING-LENGTH MAX-ACCREDITATION-ID-LENGTH))
+
+(define-private (validate-documentation-hash (hash (string-ascii 128)))
+  (validate-string-length hash MIN-STRING-LENGTH MAX-DOCUMENTATION-HASH-LENGTH))
+
+(define-private (validate-verification-notes (notes (string-ascii 256)))
+  (<= (len notes) MAX-VERIFICATION-NOTES-LENGTH))
+
+(define-private (validate-findings (findings (string-ascii 512)))
+  (<= (len findings) MAX-FINDINGS-LENGTH))
+
+(define-private (validate-recommendations (recommendations (string-ascii 512)))
+  (<= (len recommendations) MAX-RECOMMENDATIONS-LENGTH))
+
+(define-private (validate-principal (principal-to-check principal))
+  (not (is-eq principal-to-check 'SP000000000000000000002Q6VF78)))
+
 ;; Helper function to validate certification level
 (define-private (is-valid-certification-level (level uint))
   (or (is-eq level LEVEL-BASIC)
@@ -133,8 +186,9 @@
   (accreditation-id (string-ascii 64)))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED-ACCESS)
-    (asserts! (> (len name) u0) ERR-INVALID-PARAMETERS)
-    (asserts! (> (len accreditation-id) u0) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-principal certifier) ERR-INVALID-PRINCIPAL)
+    (asserts! (validate-certifier-name name) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-accreditation-id accreditation-id) ERR-INVALID-INPUT-LENGTH)
     (ok (map-set authorized-certifiers
       { certifier: certifier }
       {
@@ -148,6 +202,7 @@
 (define-public (deauthorize-certifier (certifier principal))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED-ACCESS)
+    (asserts! (validate-principal certifier) ERR-INVALID-PRINCIPAL)
     (match (map-get? authorized-certifiers { certifier: certifier })
       certifier-data (ok (map-set authorized-certifiers
         { certifier: certifier }
@@ -161,10 +216,10 @@
   (product-category (string-ascii 64))
   (origin-country (string-ascii 32)))
   (begin
-    (asserts! (> (len product-id) u0) ERR-INVALID-PARAMETERS)
-    (asserts! (> (len product-name) u0) ERR-INVALID-PARAMETERS)
-    (asserts! (> (len product-category) u0) ERR-INVALID-PARAMETERS)
-    (asserts! (> (len origin-country) u0) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-product-name product-name) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-category product-category) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-country origin-country) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-none (map-get? products { product-id: product-id })) ERR-PRODUCT-ALREADY-EXISTS)
     (ok (map-set products
       { product-id: product-id }
@@ -183,9 +238,10 @@
   (certification-level uint)
   (documentation-hash (string-ascii 128)))
   (let ((product-data (unwrap! (map-get? products { product-id: product-id }) ERR-PRODUCT-NOT-FOUND)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-eq (get producer product-data) tx-sender) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (is-valid-certification-level certification-level) ERR-INVALID-CERTIFICATION-LEVEL)
-    (asserts! (> (len documentation-hash) u0) ERR-INSUFFICIENT-DOCUMENTATION)
+    (asserts! (validate-documentation-hash documentation-hash) ERR-INVALID-INPUT-LENGTH)
     (ok (map-set certifications
       { product-id: product-id }
       {
@@ -206,6 +262,8 @@
   (compliance-score uint)
   (verification-notes (string-ascii 256)))
   (let ((certification-data (unwrap! (map-get? certifications { product-id: product-id }) ERR-PRODUCT-NOT-FOUND)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-verification-notes verification-notes) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-authorized-certifier tx-sender) ERR-CERTIFIER-NOT-AUTHORIZED)
     (asserts! (is-eq (get status certification-data) CERTIFICATION-PENDING) ERR-VERIFICATION-FAILED)
     (asserts! (<= compliance-score u100) ERR-INVALID-PARAMETERS)
@@ -230,6 +288,9 @@
   (recommendations (string-ascii 512)))
   (let ((product-data (unwrap! (map-get? products { product-id: product-id }) ERR-PRODUCT-NOT-FOUND))
         (audit-id (generate-audit-id)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-findings findings) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-recommendations recommendations) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-authorized-certifier tx-sender) ERR-CERTIFIER-NOT-AUTHORIZED)
     (asserts! (<= compliance-score u100) ERR-INVALID-PARAMETERS)
     (begin
@@ -256,10 +317,11 @@
   (new-documentation-hash (string-ascii 128)))
   (let ((product-data (unwrap! (map-get? products { product-id: product-id }) ERR-PRODUCT-NOT-FOUND))
         (cert-data (unwrap! (map-get? certifications { product-id: product-id }) ERR-PRODUCT-NOT-CERTIFIED)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-documentation-hash new-documentation-hash) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-eq (get producer product-data) tx-sender) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (is-eq (get status cert-data) CERTIFICATION-APPROVED) ERR-PRODUCT-NOT-CERTIFIED)
     (asserts! (<= (- (get expires-at cert-data) block-height) RENEWAL-WINDOW) ERR-RENEWAL-TOO-EARLY)
-    (asserts! (> (len new-documentation-hash) u0) ERR-INSUFFICIENT-DOCUMENTATION)
     (ok (map-set certification-renewals
       { product-id: product-id }
       {
@@ -277,6 +339,7 @@
   (new-compliance-score uint))
   (let ((renewal-data (unwrap! (map-get? certification-renewals { product-id: product-id }) ERR-PRODUCT-NOT-FOUND))
         (cert-data (unwrap! (map-get? certifications { product-id: product-id }) ERR-PRODUCT-NOT-CERTIFIED)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-authorized-certifier tx-sender) ERR-CERTIFIER-NOT-AUTHORIZED)
     (asserts! (is-eq (get renewal-status renewal-data) CERTIFICATION-PENDING) ERR-VERIFICATION-FAILED)
     (asserts! (<= new-compliance-score u100) ERR-INVALID-PARAMETERS)
@@ -303,6 +366,7 @@
 ;; Function to suspend certification
 (define-public (suspend-certification (product-id (string-ascii 64)))
   (let ((cert-data (unwrap! (map-get? certifications { product-id: product-id }) ERR-PRODUCT-NOT-CERTIFIED)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-authorized-certifier tx-sender) ERR-CERTIFIER-NOT-AUTHORIZED)
     (asserts! (is-eq (get status cert-data) CERTIFICATION-APPROVED) ERR-PRODUCT-NOT-CERTIFIED)
     (ok (map-set certifications
@@ -312,6 +376,7 @@
 ;; Function to reinstate suspended certification
 (define-public (reinstate-certification (product-id (string-ascii 64)))
   (let ((cert-data (unwrap! (map-get? certifications { product-id: product-id }) ERR-PRODUCT-NOT-CERTIFIED)))
+    (asserts! (validate-product-id product-id) ERR-INVALID-INPUT-LENGTH)
     (asserts! (is-authorized-certifier tx-sender) ERR-CERTIFIER-NOT-AUTHORIZED)
     (asserts! (is-eq (get status cert-data) CERTIFICATION-SUSPENDED) ERR-VERIFICATION-FAILED)
     (asserts! (not (is-certification-expired (get expires-at cert-data))) ERR-CERTIFICATION-EXPIRED)
@@ -321,23 +386,31 @@
 
 ;; Read-only function to get product information
 (define-read-only (get-product (product-id (string-ascii 64)))
-  (map-get? products { product-id: product-id }))
+  (if (validate-product-id product-id)
+    (map-get? products { product-id: product-id })
+    none))
 
 ;; Read-only function to get certification status
 (define-read-only (get-certification (product-id (string-ascii 64)))
-  (map-get? certifications { product-id: product-id }))
+  (if (validate-product-id product-id)
+    (map-get? certifications { product-id: product-id })
+    none))
 
 ;; Read-only function to check if product is currently certified
 (define-read-only (is-product-certified (product-id (string-ascii 64)))
-  (match (map-get? certifications { product-id: product-id })
-    cert-data (and 
-      (is-eq (get status cert-data) CERTIFICATION-APPROVED)
-      (not (is-certification-expired (get expires-at cert-data))))
+  (if (validate-product-id product-id)
+    (match (map-get? certifications { product-id: product-id })
+      cert-data (and 
+        (is-eq (get status cert-data) CERTIFICATION-APPROVED)
+        (not (is-certification-expired (get expires-at cert-data))))
+      false)
     false))
 
 ;; Read-only function to get certifier information
 (define-read-only (get-certifier (certifier principal))
-  (map-get? authorized-certifiers { certifier: certifier }))
+  (if (validate-principal certifier)
+    (map-get? authorized-certifiers { certifier: certifier })
+    none))
 
 ;; Read-only function to get compliance audit
 (define-read-only (get-compliance-audit (audit-id uint))
@@ -345,32 +418,38 @@
 
 ;; Read-only function to get certification renewal status
 (define-read-only (get-certification-renewal (product-id (string-ascii 64)))
-  (map-get? certification-renewals { product-id: product-id }))
+  (if (validate-product-id product-id)
+    (map-get? certification-renewals { product-id: product-id })
+    none))
 
 ;; Read-only function to verify certification authenticity
 (define-read-only (verify-certification-authenticity 
   (product-id (string-ascii 64))
   (expected-hash (string-ascii 128)))
-  (match (map-get? certifications { product-id: product-id })
-    cert-data (and
-      (is-eq (get status cert-data) CERTIFICATION-APPROVED)
-      (not (is-certification-expired (get expires-at cert-data)))
-      (is-eq (get documentation-hash cert-data) expected-hash))
+  (if (and (validate-product-id product-id) (validate-documentation-hash expected-hash))
+    (match (map-get? certifications { product-id: product-id })
+      cert-data (and
+        (is-eq (get status cert-data) CERTIFICATION-APPROVED)
+        (not (is-certification-expired (get expires-at cert-data)))
+        (is-eq (get documentation-hash cert-data) expected-hash))
+      false)
     false))
 
 ;; Read-only function to get certification expiry status
 (define-read-only (get-certification-expiry-info (product-id (string-ascii 64)))
-  (match (map-get? certifications { product-id: product-id })
-    cert-data (let ((expires-at (get expires-at cert-data))
-                     (blocks-until-expiry (if (> expires-at block-height) 
-                                           (- expires-at block-height) 
-                                           u0)))
-      (some {
-        expires-at: expires-at,
-        blocks-until-expiry: blocks-until-expiry,
-        is-expired: (is-certification-expired expires-at),
-        renewal-window-open: (<= blocks-until-expiry RENEWAL-WINDOW)
-      }))
+  (if (validate-product-id product-id)
+    (match (map-get? certifications { product-id: product-id })
+      cert-data (let ((expires-at (get expires-at cert-data))
+                       (blocks-until-expiry (if (> expires-at block-height) 
+                                             (- expires-at block-height) 
+                                             u0)))
+        (some {
+          expires-at: expires-at,
+          blocks-until-expiry: blocks-until-expiry,
+          is-expired: (is-certification-expired expires-at),
+          renewal-window-open: (<= blocks-until-expiry RENEWAL-WINDOW)
+        }))
+      none)
     none))
 
 ;; Read-only function to get contract statistics
